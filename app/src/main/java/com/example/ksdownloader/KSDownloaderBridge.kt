@@ -44,7 +44,7 @@ object KSDownloaderBridge {
     var fastApiEndpointUrl: String = "http://127.0.0.1:$FASTAPI_DEFAULT_PORT/detail/"
 
     @Volatile
-    var enableLiveNetworkConnection: Boolean = false
+    var enableLiveNetworkConnection: Boolean = true
 
     private const val KS_PC_USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
