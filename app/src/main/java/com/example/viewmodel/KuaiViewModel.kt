@@ -123,12 +123,21 @@ class KuaiViewModel : ViewModel() {
             return
         }
 
-        val batchUrls = KSDownloaderBridge.extractBatchUrls(rawClipboard)
-        val cleanedUrl = batchUrls.firstOrNull() ?: rawClipboard
+        val cleanedUrl = KSDownloaderBridge.cleanShareText(rawClipboard)
+        if (cleanedUrl == null) {
+            _uiState.update {
+                it.copy(
+                    validationMessage = "No valid Kuaishou or Kwai link found in clipboard.",
+                    isValidationError = true
+                )
+            }
+            return
+        }
+
         _uiState.update {
             it.copy(
-                urlInput = if (batchUrls.size > 1) batchUrls.joinToString(" ") else cleanedUrl,
-                validationMessage = "KS-Downloader extracting works metadata (non-login session)...",
+                urlInput = cleanedUrl,
+                validationMessage = "KS-Downloader extracting works metadata (direct connection)...",
                 isValidationError = false
             )
         }
@@ -530,7 +539,7 @@ class KuaiViewModel : ViewModel() {
                 cleanedUrl.startsWith("https://", ignoreCase = true)) &&
             (Patterns.WEB_URL.matcher(cleanedUrl).matches() || cleanedUrl.contains("."))
 
-        if (!isValidHttpUrl) {
+        if (!isValidHttpUrl || cleanedUrl == null) {
             _uiState.update {
                 it.copy(
                     validationMessage = "Please enter a valid Kuaishou, Kwai, or http(s):// video URL.",
@@ -538,6 +547,15 @@ class KuaiViewModel : ViewModel() {
                 )
             }
             return
+        }
+
+        // Immediately update the input box to show ONLY the clean URL
+        _uiState.update {
+            it.copy(
+                urlInput = cleanedUrl,
+                validationMessage = null,
+                isValidationError = false
+            )
         }
 
         viewModelScope.launch {
@@ -549,10 +567,12 @@ class KuaiViewModel : ViewModel() {
         rawInput: String,
         autoStartDefaultDownload: Boolean
     ) {
+        val cleanDisplayUrl = KSDownloaderBridge.cleanShareText(rawInput)
         _uiState.update {
             it.copy(
                 isDownloading = true,
-                validationMessage = "KS-Downloader extracting works metadata (non-login session)...",
+                urlInput = cleanDisplayUrl ?: it.urlInput,
+                validationMessage = "KS-Downloader extracting works metadata (direct connection)...",
                 isValidationError = false
             )
         }

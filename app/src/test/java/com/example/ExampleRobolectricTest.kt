@@ -52,17 +52,23 @@ class ExampleRobolectricTest {
         assertEquals(KSLinkFormat.CN_SHORT_VIDEO, KSDownloaderBridge.classifyLinkFormat(link4))
         assertEquals(KSLinkFormat.LIVE_USER_POST, KSDownloaderBridge.classifyLinkFormat(link5))
 
-        // 2. Verify space-separated batch link extraction & share text cleaning
+        // 2. Verify strict URL sanitizer strips Markdown brackets ](http, quotes, and Chinese text
         val messyShare = "🔥太震撼了！航拍绝美雪山湖泊 #快手创作者 @自然探索者 https://v.kuaishou.com/7xYz9A 复制此消息打开【快手】直接观看！"
         val cleaned = KSDownloaderBridge.cleanShareText(messyShare)
         assertEquals("https://v.kuaishou.com/7xYz9A", cleaned)
+
+        val markdownBracketShare = "5.82 复制打开快手看看 [https://v.kuaishou.com/](https://v.kuaishou.com/J8kLmN) 精彩视频！"
+        assertEquals("https://v.kuaishou.com/J8kLmN", KSDownloaderBridge.cleanShareText(markdownBracketShare))
+
+        val corruptedBracketShare = "https://v.kuaishou.com/](https://v.kuaishou.com/9pQrSt) some trailing text"
+        assertEquals("https://v.kuaishou.com/9pQrSt", KSDownloaderBridge.cleanShareText(corruptedBracketShare))
 
         val batchInput = "$link1 $link2 $link3 $link4 $link5"
         val extractedBatch = KSDownloaderBridge.extractBatchUrls(batchInput)
         assertEquals(5, extractedBatch.size)
 
-        // 3. Verify photoId extraction from redirected /fw/photo/{photoId} and query params
-        val redirectedFw = "https://c.kuaishou.com/fw/photo/3xRealPhoto998?fid=12345&cc=share_copylink"
+        // 3. Verify photoId extraction from redirected /fw/photo/{photoId} on c.kuaishou.com, m.gifshow.com, v.m.chenzhongtech.com
+        val redirectedFw = "https://v.m.chenzhongtech.com/fw/photo/3xRealPhoto998?fid=12345&cc=share_copylink"
         val (extractedPid, extractedUid) = KSDownloaderBridge.extractWorksAndAuthorIds(redirectedFw)
         assertEquals("3xRealPhoto998", extractedPid)
         assertEquals("12345", extractedUid)

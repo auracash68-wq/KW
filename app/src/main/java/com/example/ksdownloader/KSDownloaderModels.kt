@@ -44,12 +44,11 @@ enum class KSLinkFormat(val patternDescription: String) {
 }
 
 /**
- * FastAPI Port 5557 Request Schema (`python main.py api` in JoeanAmier/KS-Downloader).
+ * Direct Native Extraction Request Schema.
  */
 data class KSDownloaderFastApiRequest(
     val url: String,
-    val cookie: String = "",
-    val proxy: String? = null
+    val cookie: String = ""
 )
 
 data class KSVideoQualityOption(
@@ -114,7 +113,7 @@ data class KSDownloaderWorksDetail(
     val videoQualities: List<KSVideoQualityOption> = emptyList(),
     val photoAtlas: List<KSAtlasPhotoItem> = emptyList(),
     val batchSiblingUrls: List<String> = emptyList(),
-    val extractionEngineTag: String = "JoeanAmier/KS-Downloader (FastAPI:5557)"
+    val extractionEngineTag: String = "KS-Downloader Native Direct Engine"
 ) {
     /**
      * Generates a clean filename following JoeanAmier/KS-Downloader naming rules:
