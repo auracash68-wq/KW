@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.widget.MediaController
+import android.widget.VideoView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -38,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalFocusManager
@@ -48,10 +53,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ksdownloader.KSAtlasPhotoItem
+import java.io.File
 import com.example.ksdownloader.KSDownloadTaskState
 import com.example.ksdownloader.KSDownloaderWorksDetail
 import com.example.ksdownloader.KSVideoQualityOption
@@ -475,17 +482,60 @@ private fun VideoPreviewModal(
                         .clip(RoundedCornerShape(14.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Image(
-                        painter = painterResource(id = item.thumbnailRes),
-                        contentDescription = item.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    PlayCircleBadgeIcon(
-                        isGradientSelected = true,
-                        inactiveCircleColor = PrimaryOrange,
-                        size = 54.dp
-                    )
+                    val localFile = remember(item.localFilePath) {
+                        item.localFilePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 100L }
+                    }
+                    val decodedBitmap = remember(localFile, item.category) {
+                        if (item.category == MediaCategory.IMAGES && localFile != null) {
+                            try {
+                                BitmapFactory.decodeFile(localFile.absolutePath)?.asImageBitmap()
+                            } catch (_: Throwable) {
+                                null
+                            }
+                        } else null
+                    }
+
+                    if (decodedBitmap != null) {
+                        Image(
+                            bitmap = decodedBitmap,
+                            contentDescription = item.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else if (!item.isDemonstration && (localFile != null || !item.sourceUrl.isNullOrBlank()) && item.category != MediaCategory.IMAGES) {
+                        AndroidView(
+                            factory = { ctx ->
+                                VideoView(ctx).apply {
+                                    val controller = MediaController(ctx)
+                                    controller.setAnchorView(this)
+                                    setMediaController(controller)
+                                    val targetUri = if (localFile != null) {
+                                        Uri.fromFile(localFile)
+                                    } else {
+                                        Uri.parse(item.sourceUrl)
+                                    }
+                                    setVideoURI(targetUri)
+                                    setOnPreparedListener { mp ->
+                                        mp.isLooping = true
+                                        start()
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Image(
+                            painter = painterResource(id = item.thumbnailRes),
+                            contentDescription = item.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        PlayCircleBadgeIcon(
+                            isGradientSelected = true,
+                            inactiveCircleColor = PrimaryOrange,
+                            size = 54.dp
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))

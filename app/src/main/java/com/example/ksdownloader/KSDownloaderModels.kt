@@ -121,22 +121,12 @@ data class KSDownloaderWorksDetail(
      * `{authorNickname}_{worksId}_{description}_{qualityTag}.{extension}`
      */
     fun buildKSFileName(extension: String, qualityTag: String? = null): String {
-        val safeAuthor = authorNickname
-            .replace(Regex("[^a-zA-Z0-9\\u4e00-\\u9fa5_-]"), "")
-            .take(14)
-            .ifBlank { "KuaishouUser" }
-        val safeDesc = description
-            .replace(Regex("[^a-zA-Z0-9\\u4e00-\\u9fa5_-]"), "_")
-            .replace(Regex("_+"), "_")
-            .trim('_')
-            .take(22)
-            .ifBlank { "KSWorks" }
         val safeId = worksId
             .replace(Regex("[^a-zA-Z0-9_-]"), "")
-            .take(12)
+            .take(16)
             .ifBlank { "post" }
         val suffix = if (!qualityTag.isNullOrBlank()) "_$qualityTag" else ""
-        return "KS_${safeAuthor}_${safeId}_${safeDesc}${suffix}.${extension.lowercase()}"
+        return "KuaiSave_${safeId}${suffix}.${extension.lowercase()}"
     }
 
     /**

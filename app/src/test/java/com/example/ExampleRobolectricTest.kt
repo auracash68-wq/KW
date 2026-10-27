@@ -38,7 +38,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `verify KSDownloaderBridge 5 official link formats batch extraction and FastAPI 5557 contract`() = runBlocking {
+    fun `verify KSDownloaderBridge 3-Layer Real Extractor hydration GraphQL and FastAPI 5557`() = runBlocking {
         // 1. Verify all 5 official JoeanAmier/KS-Downloader link formats
         val link1 = "https://www.kuaishou.com/f/X-92aBcDeF"
         val link2 = "https://v.kuaishou.com/7xYz9A"
@@ -52,44 +52,110 @@ class ExampleRobolectricTest {
         assertEquals(KSLinkFormat.CN_SHORT_VIDEO, KSDownloaderBridge.classifyLinkFormat(link4))
         assertEquals(KSLinkFormat.LIVE_USER_POST, KSDownloaderBridge.classifyLinkFormat(link5))
 
-        // 2. Verify space-separated batch link extraction
+        // 2. Verify space-separated batch link extraction & share text cleaning
+        val messyShare = "🔥太震撼了！航拍绝美雪山湖泊 #快手创作者 @自然探索者 https://v.kuaishou.com/7xYz9A 复制此消息打开【快手】直接观看！"
+        val cleaned = KSDownloaderBridge.cleanShareText(messyShare)
+        assertEquals("https://v.kuaishou.com/7xYz9A", cleaned)
+
         val batchInput = "$link1 $link2 $link3 $link4 $link5"
         val extractedBatch = KSDownloaderBridge.extractBatchUrls(batchInput)
         assertEquals(5, extractedBatch.size)
 
-        // 3. Verify non-login visitor session cookies
+        // 3. Verify photoId extraction from redirected /fw/photo/{photoId} and query params
+        val redirectedFw = "https://c.kuaishou.com/fw/photo/3xRealPhoto998?fid=12345&cc=share_copylink"
+        val (extractedPid, extractedUid) = KSDownloaderBridge.extractWorksAndAuthorIds(redirectedFw)
+        assertEquals("3xRealPhoto998", extractedPid)
+        assertEquals("12345", extractedUid)
+
+        // 4. Verify non-login visitor session cookies
         val cookies = KSDownloaderBridge.ensureNonLoginSessionCookies()
         assertTrue(cookies["did"]?.startsWith("web_") == true)
         assertTrue(cookies.containsKey("didv"))
 
-        // 4. Verify video extraction & 4 media streams
-        val messyShare = "🔥太震撼了！航拍绝美雪山湖泊 #快手创作者 @自然探索者 https://v.kuaishou.com/7xYz9A 复制此消息打开【快手】直接观看！"
-        val videoWorks = KSDownloaderBridge.extractWorks(
+        // 5. Verify Layer 2 Kuaishou GraphQL / Hydration multi-quality & audio/cover extraction
+        val graphqlHydrationHtml = """
+            <html><head><script>
+            window.__INITIAL_STATE__ = {
+              "visionVideoDetail": {
+                "author": { "id": "u_8821", "name": "自然探索者" },
+                "photo": {
+                  "id": "3x89aBcDeF",
+                  "duration": 65000,
+                  "caption": "航拍绝美雪山湖泊 4K",
+                  "coverUrl": "https://tx2.a.kwimgs.com/upic/2026/10/cover_real.jpg",
+                  "photoUrl": "https://txmov2.a.kwimgs.com/upic/2026/10/video_nowm_hd.mp4",
+                  "manifest": {
+                    "adaptationSet": [{
+                      "representation": [
+                        { "id": 1, "url": "https://txmov2.a.kwimgs.com/upic/2026/10/video_4k.mp4", "qualityLabel": "4K", "width": 3840, "height": 2160, "bitRate": 8500000 },
+                        { "id": 2, "url": "https://txmov2.a.kwimgs.com/upic/2026/10/video_1080p.mp4", "qualityLabel": "1080p", "width": 1920, "height": 1080, "bitRate": 4200000 },
+                        { "id": 3, "url": "https://txmov2.a.kwimgs.com/upic/2026/10/video_720p.mp4", "qualityLabel": "720p", "width": 1280, "height": 720, "bitRate": 2100000 }
+                      ]
+                    }]
+                  },
+                  "soundTrack": {
+                    "audioUrls": [{ "cdn": "tx2.a.kwimgs.com", "url": "https://tx2.a.kwimgs.com/upic/2026/10/audio_orig.mp3" }]
+                  }
+                }
+              }
+            };
+            </script></head></html>
+        """.trimIndent()
+
+        val parsedVideo = KSDownloaderBridge.tryParseKSExtractorPayload(
+            payload = graphqlHydrationHtml,
+            cleanShareUrl = link2,
+            resolvedPageUrl = link3,
             rawInput = messyShare,
-            simulateNetworkDelayMs = 0L
-        ).getOrThrow()
+            titleHint = null,
+            authorHint = null
+        )
+        assertNotNull(parsedVideo)
+        assertEquals("3x89aBcDeF", parsedVideo?.worksId)
+        assertEquals("航拍绝美雪山湖泊 4K", parsedVideo?.description)
+        assertEquals("自然探索者", parsedVideo?.authorNickname)
+        assertEquals(KSWorksType.VIDEO, parsedVideo?.worksType)
+        assertEquals(3, parsedVideo?.videoQualities?.size)
+        assertEquals("https://txmov2.a.kwimgs.com/upic/2026/10/video_4k.mp4", parsedVideo?.videoQualities?.first()?.videoUrl)
+        assertEquals("https://tx2.a.kwimgs.com/upic/2026/10/audio_orig.mp3", parsedVideo?.musicUrl)
+        assertEquals("https://tx2.a.kwimgs.com/upic/2026/10/cover_real.jpg", parsedVideo?.coverUrl)
+        assertEquals("KuaiSave_3x89aBcDeF_1080p.mp4", parsedVideo?.buildKSFileName("mp4", "1080p"))
 
-        assertEquals(KSWorksType.VIDEO, videoWorks.worksType)
-        assertEquals("https://v.kuaishou.com/7xYz9A", videoWorks.worksUrl)
-        assertEquals("自然探索者", videoWorks.authorNickname)
-        assertTrue(videoWorks.videoQualities.size >= 4)
-        assertTrue(videoWorks.musicUrl.endsWith(".mp3"))
-        assertTrue(videoWorks.coverUrl.endsWith(".jpg"))
+        // 6. Verify Layer 2 Photo Atlas (`ext_params.atlas`) extraction
+        val atlasHtml = """
+            <html><head><script>
+            window.pageData = {
+              "user": { "name": "风光摄影师" },
+              "video": {
+                "id": "3xAtlas771",
+                "caption": "秋日图集高清无水印",
+                "ext_params": {
+                  "atlas": {
+                    "cdn": ["tx2.a.kwimgs.com"],
+                    "list": ["/upic/2026/10/img_1.jpg", "/upic/2026/10/img_2.jpg"],
+                    "music": "/upic/2026/10/atlas_bgm.mp3"
+                  }
+                }
+              }
+            };
+            </script></head></html>
+        """.trimIndent()
 
-        val ksMap = videoWorks.toKSRepositoryMap()
-        assertEquals(videoWorks.worksId, ksMap["作品ID"])
-        assertEquals("视频", ksMap["作品类型"])
+        val parsedAtlas = KSDownloaderBridge.tryParseKSExtractorPayload(
+            payload = atlasHtml,
+            cleanShareUrl = "https://v.kuaishou.com/atlas77",
+            resolvedPageUrl = "https://c.kuaishou.com/fw/photo/3xAtlas771",
+            rawInput = "https://v.kuaishou.com/atlas77",
+            titleHint = null,
+            authorHint = null
+        )
+        assertNotNull(parsedAtlas)
+        assertEquals(KSWorksType.PHOTO_ATLAS, parsedAtlas?.worksType)
+        assertEquals(2, parsedAtlas?.photoAtlas?.size)
+        assertEquals("https://tx2.a.kwimgs.com/upic/2026/10/img_1.jpg", parsedAtlas?.photoAtlas?.first()?.imageUrl)
+        assertEquals("https://tx2.a.kwimgs.com/upic/2026/10/atlas_bgm.mp3", parsedAtlas?.musicUrl)
 
-        // 5. Verify Photo Atlas (图集) extraction
-        val photoShare = "📸绝美秋日图集分享 @风光摄影师 https://www.kuaishou.com/photo/atlas_99281"
-        val photoWorks = KSDownloaderBridge.extractWorks(
-            rawInput = photoShare,
-            simulateNetworkDelayMs = 0L
-        ).getOrThrow()
-        assertEquals(KSWorksType.PHOTO_ATLAS, photoWorks.worksType)
-        assertTrue(photoWorks.photoAtlas.isNotEmpty())
-
-        // 6. Verify FastAPI Port 5557 Chinese JSON response parsing
+        // 7. Verify FastAPI Port 5557 Chinese JSON response parsing
         val fastApiJson = """
             {
               "message": "success",

@@ -361,79 +361,153 @@ class KuaiViewModel : ViewModel() {
             }
 
             var completedCount = 0
+            var lastErrorText: String? = null
+
             for (targetId in selectedIds) {
-                val itemExists = _uiState.value.bulkPendingItems.any { it.id == targetId }
-                if (!itemExists) continue
+                val currentItem = _uiState.value.bulkPendingItems.firstOrNull { it.id == targetId } ?: continue
 
                 _uiState.update { state ->
                     state.copy(
                         bulkPendingItems = state.bulkPendingItems.map { item ->
                             if (item.id == targetId) {
-                                item.copy(status = BulkItemStatus.DOWNLOADING, progressPercent = 50)
+                                item.copy(status = BulkItemStatus.DOWNLOADING, progressPercent = 5)
                             } else {
                                 item
                             }
                         }
                     )
                 }
-                delay(160)
 
-                val currentItem = _uiState.value.bulkPendingItems.firstOrNull { it.id == targetId }
-                if (currentItem != null) {
-                    completedCount++
-                    val category = when (currentItem.contentType) {
-                        BulkContentType.VIDEO -> MediaCategory.VIDEOS
-                        BulkContentType.AUDIO -> MediaCategory.AUDIO
-                        BulkContentType.PHOTO -> MediaCategory.IMAGES
-                    }
-                    val ext = when (currentItem.contentType) {
-                        BulkContentType.VIDEO -> "mp4"
-                        BulkContentType.AUDIO -> "mp3"
-                        BulkContentType.PHOTO -> "jpg"
-                    }
-                    val (worksId, _) = KSDownloaderBridge.extractWorksAndAuthorIds(currentItem.url)
-                    val cleanName = "KS_${worksId}_${currentItem.quality}.$ext"
-                    val queuedItem = VideoMediaItem(
-                        id = "ks_bulk_dl_${currentItem.id}",
-                        title = currentItem.title,
-                        duration = currentItem.duration,
-                        thumbnailRes = currentItem.thumbnailRes,
-                        category = category,
-                        isDemonstration = false,
-                        sourceUrl = currentItem.url,
-                        fileName = cleanName,
-                        qualityLabel = currentItem.quality,
-                        fileSizeText = currentItem.fileSize
-                    )
-                    _uiState.update { state ->
-                        state.copy(
-                            downloadedVideos = if (category == MediaCategory.VIDEOS) {
-                                listOf(queuedItem) + state.downloadedVideos.filterNot { it.id == queuedItem.id }
-                            } else state.downloadedVideos,
-                            downloadedAudios = if (category == MediaCategory.AUDIO) {
-                                listOf(queuedItem) + state.downloadedAudios.filterNot { it.id == queuedItem.id }
-                            } else state.downloadedAudios,
-                            downloadedImages = if (category == MediaCategory.IMAGES) {
-                                listOf(queuedItem) + state.downloadedImages.filterNot { it.id == queuedItem.id }
-                            } else state.downloadedImages,
-                            bulkPendingItems = state.bulkPendingItems.map { item ->
-                                if (item.id == targetId) {
-                                    item.copy(status = BulkItemStatus.COMPLETED, progressPercent = 100)
-                                } else {
-                                    item
+                val category = when (currentItem.contentType) {
+                    BulkContentType.VIDEO -> MediaCategory.VIDEOS
+                    BulkContentType.AUDIO -> MediaCategory.AUDIO
+                    BulkContentType.PHOTO -> MediaCategory.IMAGES
+                }
+                val ext = when (currentItem.contentType) {
+                    BulkContentType.VIDEO -> "mp4"
+                    BulkContentType.AUDIO -> "mp3"
+                    BulkContentType.PHOTO -> "jpg"
+                }
+
+                val extractRes = KSDownloaderBridge.extractWorks(currentItem.url, simulateNetworkDelayMs = 0L)
+                extractRes.fold(
+                    onSuccess = { works ->
+                        val streamUrl = when (currentItem.contentType) {
+                            BulkContentType.VIDEO -> works.videoQualities.firstOrNull()?.videoUrl ?: works.downloadUrls.firstOrNull()
+                            BulkContentType.AUDIO -> works.musicUrl.ifBlank { works.videoQualities.firstOrNull()?.videoUrl }
+                            BulkContentType.PHOTO -> works.photoAtlas.firstOrNull()?.imageUrl ?: works.coverUrl
+                        }.orEmpty()
+
+                        val cleanName = works.buildKSFileName(extension = ext, qualityTag = currentItem.quality)
+                        val dlRes = KSDownloaderBridge.streamDownloadToDevice(
+                            worksId = works.worksId,
+                            fileName = cleanName,
+                            targetLabel = works.description,
+                            sourceUrl = streamUrl,
+                            totalBytes = 0L,
+                            mediaCategory = category,
+                            stepDelayMs = 0L,
+                            onProgress = { prog ->
+                                _uiState.update { state ->
+                                    state.copy(
+                                        bulkPendingItems = state.bulkPendingItems.map { item ->
+                                            if (item.id == targetId) {
+                                                item.copy(
+                                                    status = BulkItemStatus.DOWNLOADING,
+                                                    progressPercent = prog.progressPercent
+                                                )
+                                            } else item
+                                        }
+                                    )
                                 }
                             }
                         )
+
+                        dlRes.fold(
+                            onSuccess = { finishedTask ->
+                                completedCount++
+                                val realSize = KSDownloaderBridge.formatBytes(finishedTask.bytesDownloaded)
+                                val queuedItem = VideoMediaItem(
+                                    id = "ks_bulk_dl_${currentItem.id}",
+                                    title = works.description,
+                                    duration = works.durationText,
+                                    thumbnailRes = currentItem.thumbnailRes,
+                                    category = category,
+                                    isDemonstration = false,
+                                    sourceUrl = streamUrl,
+                                    fileName = cleanName,
+                                    qualityLabel = currentItem.quality,
+                                    fileSizeText = realSize,
+                                    localFilePath = finishedTask.savedFilePath,
+                                    authorName = works.authorNickname
+                                )
+                                _uiState.update { state ->
+                                    state.copy(
+                                        downloadedVideos = if (category == MediaCategory.VIDEOS) {
+                                            listOf(queuedItem) + state.downloadedVideos.filterNot { it.id == queuedItem.id }
+                                        } else state.downloadedVideos,
+                                        downloadedAudios = if (category == MediaCategory.AUDIO) {
+                                            listOf(queuedItem) + state.downloadedAudios.filterNot { it.id == queuedItem.id }
+                                        } else state.downloadedAudios,
+                                        downloadedImages = if (category == MediaCategory.IMAGES) {
+                                            listOf(queuedItem) + state.downloadedImages.filterNot { it.id == queuedItem.id }
+                                        } else state.downloadedImages,
+                                        bulkPendingItems = state.bulkPendingItems.map { item ->
+                                            if (item.id == targetId) {
+                                                item.copy(
+                                                    title = works.description,
+                                                    fileSize = realSize,
+                                                    status = BulkItemStatus.COMPLETED,
+                                                    progressPercent = 100
+                                                )
+                                            } else item
+                                        }
+                                    )
+                                }
+                            },
+                            onFailure = { dlErr ->
+                                lastErrorText = dlErr.message
+                                _uiState.update { state ->
+                                    state.copy(
+                                        bulkPendingItems = state.bulkPendingItems.map { item ->
+                                            if (item.id == targetId) {
+                                                item.copy(status = BulkItemStatus.FAILED, progressPercent = 0)
+                                            } else item
+                                        }
+                                    )
+                                }
+                            }
+                        )
+                    },
+                    onFailure = { extErr ->
+                        lastErrorText = extErr.message
+                        _uiState.update { state ->
+                            state.copy(
+                                bulkPendingItems = state.bulkPendingItems.map { item ->
+                                    if (item.id == targetId) {
+                                        item.copy(status = BulkItemStatus.FAILED, progressPercent = 0)
+                                    } else item
+                                }
+                            )
+                        }
                     }
-                }
+                )
             }
 
             _uiState.update {
-                it.copy(
-                    isBulkDownloadingAll = false,
-                    bulkValidationMessage = "KS-Downloader saved $completedCount item(s) to Offline Library (Player).",
-                    isBulkValidationError = false
-                )
+                if (completedCount > 0) {
+                    it.copy(
+                        isBulkDownloadingAll = false,
+                        bulkValidationMessage = "Saved $completedCount real media file(s) to Downloads/KuaiVideoSave & Player.",
+                        isBulkValidationError = false
+                    )
+                } else {
+                    it.copy(
+                        isBulkDownloadingAll = false,
+                        bulkValidationMessage = lastErrorText ?: "Failed to extract real media streams for selected URLs.",
+                        isBulkValidationError = true
+                    )
+                }
             }
         }
     }
@@ -483,7 +557,7 @@ class KuaiViewModel : ViewModel() {
             )
         }
 
-        val extractResult = KSDownloaderBridge.extractWorks(rawInput, simulateNetworkDelayMs = 130L)
+        val extractResult = KSDownloaderBridge.extractWorks(rawInput, simulateNetworkDelayMs = 0L)
         extractResult.fold(
             onSuccess = { worksDetail ->
                 val defaultQuality = worksDetail.videoQualities.firstOrNull {
@@ -501,8 +575,8 @@ class KuaiViewModel : ViewModel() {
                                 id = "ks_batch_${System.currentTimeMillis()}_$idx",
                                 title = "KS Batch Works ($sibWorksId)",
                                 url = siblingUrl,
-                                fileSize = "34.6 MB",
-                                duration = "01:45",
+                                fileSize = "HD Stream",
+                                duration = "HD",
                                 quality = "1080p",
                                 contentType = BulkContentType.VIDEO,
                                 thumbnailRes = R.drawable.vid_thumb_2,
@@ -667,12 +741,6 @@ class KuaiViewModel : ViewModel() {
                     mediaCategory = MediaCategory.IMAGES
                 )
             }
-            _uiState.update {
-                it.copy(
-                    validationMessage = "KS-Downloader saved all ${post.photoAtlas.size} HD photos into Offline Library.",
-                    isValidationError = false
-                )
-            }
         }
     }
 
@@ -696,44 +764,55 @@ class KuaiViewModel : ViewModel() {
             sourceUrl = sourceUrl,
             totalBytes = totalBytes,
             mediaCategory = mediaCategory,
-            stepDelayMs = 24L,
+            stepDelayMs = 0L,
             onProgress = { progressState ->
                 _uiState.update { it.copy(activeDownloadTask = progressState) }
             }
         )
 
-        result.onSuccess { finishedTask ->
-            val savedItem = VideoMediaItem(
-                id = "ks_dl_${System.currentTimeMillis()}",
-                title = targetLabel,
-                duration = durationText,
-                thumbnailRes = thumbnailRes,
-                category = mediaCategory,
-                isDemonstration = false,
-                sourceUrl = sourceUrl,
-                fileName = fileName,
-                qualityLabel = qualityLabel,
-                fileSizeText = formattedSize,
-                localFilePath = finishedTask.savedFilePath,
-                authorName = authorName
-            )
-
-            _uiState.update { state ->
-                state.copy(
-                    downloadedVideos = if (mediaCategory == MediaCategory.VIDEOS) {
-                        listOf(savedItem) + state.downloadedVideos
-                    } else state.downloadedVideos,
-                    downloadedAudios = if (mediaCategory == MediaCategory.AUDIO) {
-                        listOf(savedItem) + state.downloadedAudios
-                    } else state.downloadedAudios,
-                    downloadedImages = if (mediaCategory == MediaCategory.IMAGES) {
-                        listOf(savedItem) + state.downloadedImages
-                    } else state.downloadedImages,
-                    validationMessage = "Saved $fileName to Offline Library (Player).",
-                    isValidationError = false
+        result.fold(
+            onSuccess = { finishedTask ->
+                val actualSizeText = KSDownloaderBridge.formatBytes(finishedTask.bytesDownloaded)
+                val savedItem = VideoMediaItem(
+                    id = "ks_dl_${System.currentTimeMillis()}",
+                    title = targetLabel,
+                    duration = durationText,
+                    thumbnailRes = thumbnailRes,
+                    category = mediaCategory,
+                    isDemonstration = false,
+                    sourceUrl = sourceUrl,
+                    fileName = fileName,
+                    qualityLabel = qualityLabel,
+                    fileSizeText = actualSizeText,
+                    localFilePath = finishedTask.savedFilePath,
+                    authorName = authorName
                 )
+
+                _uiState.update { state ->
+                    state.copy(
+                        downloadedVideos = if (mediaCategory == MediaCategory.VIDEOS) {
+                            listOf(savedItem) + state.downloadedVideos
+                        } else state.downloadedVideos,
+                        downloadedAudios = if (mediaCategory == MediaCategory.AUDIO) {
+                            listOf(savedItem) + state.downloadedAudios
+                        } else state.downloadedAudios,
+                        downloadedImages = if (mediaCategory == MediaCategory.IMAGES) {
+                            listOf(savedItem) + state.downloadedImages
+                        } else state.downloadedImages,
+                        validationMessage = "Saved $fileName ($actualSizeText) to Downloads/KuaiVideoSave & Player.",
+                        isValidationError = false
+                    )
+                }
+            },
+            onFailure = { err ->
+                _uiState.update {
+                    it.copy(
+                        validationMessage = "Binary stream download error: ${err.message ?: "Failed to read stream from CDN"}",
+                        isValidationError = true
+                    )
+                }
             }
-        }
+        )
     }
 
     fun togglePauseResumeDownload() {
