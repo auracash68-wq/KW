@@ -51,10 +51,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.engine.DownloadTaskState
-import com.example.engine.KuaishouParsedPost
-import com.example.engine.KuaishouPhotoItem
-import com.example.engine.KuaishouVideoQualityStream
+import com.example.ksdownloader.KSAtlasPhotoItem
+import com.example.ksdownloader.KSDownloadTaskState
+import com.example.ksdownloader.KSDownloaderWorksDetail
+import com.example.ksdownloader.KSVideoQualityOption
 import com.example.model.AppDestination
 import com.example.model.MediaCategory
 import com.example.model.VaultMediaItem
@@ -224,15 +224,15 @@ fun DownloadScreen(
     onPasteFromClipboard: (String?) -> Unit,
     onDownloadClick: () -> Unit,
     onBulkDownloadClick: () -> Unit,
-    parsedPost: KuaishouParsedPost? = null,
-    selectedQuality: KuaishouVideoQualityStream? = null,
-    activeDownloadTask: DownloadTaskState? = null,
-    onSelectQuality: (KuaishouVideoQualityStream) -> Unit = {},
+    parsedPost: KSDownloaderWorksDetail? = null,
+    selectedQuality: KSVideoQualityOption? = null,
+    activeDownloadTask: KSDownloadTaskState? = null,
+    onSelectQuality: (KSVideoQualityOption) -> Unit = {},
     onDownloadVideoNoWatermark: () -> Unit = {},
     onDownloadOriginalAudio: () -> Unit = {},
     onDownloadCoverThumbnail: () -> Unit = {},
     onDownloadAllPhotos: () -> Unit = {},
-    onDownloadSinglePhoto: (KuaishouPhotoItem) -> Unit = {},
+    onDownloadSinglePhoto: (KSAtlasPhotoItem) -> Unit = {},
     onPauseOrResumeDownload: () -> Unit = {},
     onCancelDownload: () -> Unit = {},
     modifier: Modifier = Modifier

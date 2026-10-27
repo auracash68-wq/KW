@@ -4,13 +4,13 @@ import android.util.Patterns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
-import com.example.engine.DownloadTaskState
-import com.example.engine.DownloadTaskStatus
-import com.example.engine.KuaishouEngineService
-import com.example.engine.KuaishouParsedPost
-import com.example.engine.KuaishouPhotoItem
-import com.example.engine.KuaishouPostType
-import com.example.engine.KuaishouVideoQualityStream
+import com.example.ksdownloader.KSAtlasPhotoItem
+import com.example.ksdownloader.KSDownloadStatus
+import com.example.ksdownloader.KSDownloadTaskState
+import com.example.ksdownloader.KSDownloaderBridge
+import com.example.ksdownloader.KSDownloaderWorksDetail
+import com.example.ksdownloader.KSVideoQualityOption
+import com.example.ksdownloader.KSWorksType
 import com.example.model.AppDestination
 import com.example.model.BulkContentType
 import com.example.model.BulkItemStatus
@@ -34,9 +34,9 @@ data class KuaiUiState(
     val isDownloading: Boolean = false,
     val validationMessage: String? = null,
     val isValidationError: Boolean = false,
-    val parsedPost: KuaishouParsedPost? = null,
-    val selectedParsedQuality: KuaishouVideoQualityStream? = null,
-    val activeDownloadTask: DownloadTaskState? = null,
+    val parsedPost: KSDownloaderWorksDetail? = null,
+    val selectedParsedQuality: KSVideoQualityOption? = null,
+    val activeDownloadTask: KSDownloadTaskState? = null,
     val bulkUrlInput: String = "",
     val bulkContentType: BulkContentType = BulkContentType.VIDEO,
     val bulkSelectedQuality: String = BulkContentType.VIDEO.defaultQuality,
@@ -84,9 +84,7 @@ class KuaiViewModel : ViewModel() {
     val uiState: StateFlow<KuaiUiState> = _uiState.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            KuaishouEngineService.syncRemoteRulesIfNeeded()
-        }
+        KSDownloaderBridge.ensureNonLoginSessionCookies()
     }
 
     fun selectDestination(destination: AppDestination) {
@@ -125,17 +123,18 @@ class KuaiViewModel : ViewModel() {
             return
         }
 
-        val cleanedUrl = KuaishouEngineService.cleanShareText(rawClipboard) ?: rawClipboard
+        val batchUrls = KSDownloaderBridge.extractBatchUrls(rawClipboard)
+        val cleanedUrl = batchUrls.firstOrNull() ?: rawClipboard
         _uiState.update {
             it.copy(
-                urlInput = cleanedUrl,
-                validationMessage = "Link cleaned from clipboard. Parsing Kuaishou media streams...",
+                urlInput = if (batchUrls.size > 1) batchUrls.joinToString(" ") else cleanedUrl,
+                validationMessage = "KS-Downloader extracting works metadata (non-login session)...",
                 isValidationError = false
             )
         }
 
         viewModelScope.launch {
-            parseInputWithEngine(rawClipboard, autoStartDefaultDownload = false)
+            extractWithKSDownloader(rawClipboard, autoStartDefaultDownload = false)
         }
     }
 
@@ -191,12 +190,18 @@ class KuaiViewModel : ViewModel() {
             return
         }
 
-        val cleanedUrl = KuaishouEngineService.cleanShareText(rawInput) ?: rawInput
-        val isValidHttpUrl = (cleanedUrl.startsWith("http://", ignoreCase = true) ||
-            cleanedUrl.startsWith("https://", ignoreCase = true)) &&
-            (Patterns.WEB_URL.matcher(cleanedUrl).matches() || cleanedUrl.contains("."))
+        // Support space-separated batch links from KS-Downloader
+        val extractedUrls = KSDownloaderBridge.extractBatchUrls(rawInput).ifEmpty {
+            listOf(rawInput)
+        }
 
-        if (!isValidHttpUrl) {
+        val validUrls = extractedUrls.filter { url ->
+            (url.startsWith("http://", ignoreCase = true) ||
+                url.startsWith("https://", ignoreCase = true)) &&
+                (Patterns.WEB_URL.matcher(url).matches() || url.contains("."))
+        }
+
+        if (validUrls.isEmpty()) {
             _uiState.update {
                 it.copy(
                     bulkValidationMessage = "Please enter a valid http:// or https:// URL.",
@@ -206,10 +211,12 @@ class KuaiViewModel : ViewModel() {
             return
         }
 
-        val existing = _uiState.value.bulkPendingItems.any {
-            it.url.equals(cleanedUrl, ignoreCase = true)
+        val state = _uiState.value
+        val newUrls = validUrls.filterNot { candidate ->
+            state.bulkPendingItems.any { it.url.equals(candidate, ignoreCase = true) }
         }
-        if (existing) {
+
+        if (newUrls.isEmpty()) {
             _uiState.update {
                 it.copy(
                     bulkValidationMessage = "This URL is already in the pending list.",
@@ -219,7 +226,6 @@ class KuaiViewModel : ViewModel() {
             return
         }
 
-        val state = _uiState.value
         val thumbPool = listOf(
             R.drawable.vid_thumb_1,
             R.drawable.vid_thumb_2,
@@ -228,43 +234,47 @@ class KuaiViewModel : ViewModel() {
             R.drawable.vid_thumb_5,
             R.drawable.vid_thumb_6
         )
-        val nextIndex = state.bulkPendingItems.size + 1
-        val thumbRes = thumbPool[(nextIndex - 1) % thumbPool.size]
-        val (shareTitle, _) = KuaishouEngineService.extractShareTextMetadata(rawInput, cleanedUrl)
-        val cleanSlug = cleanedUrl
-            .substringAfter("://")
-            .substringAfterLast('/')
-            .substringBefore('?')
-            .ifBlank { "${state.bulkContentType.label} Item #$nextIndex" }
 
-        val resolvedTitle = shareTitle
-            ?: if (cleanSlug.length > 4) "Media Stream ($cleanSlug)" else "${state.bulkContentType.label} Stream #$nextIndex"
+        val addedItems = newUrls.mapIndexed { offset, cleanedUrl ->
+            val nextIndex = state.bulkPendingItems.size + offset + 1
+            val thumbRes = thumbPool[(nextIndex - 1) % thumbPool.size]
+            val (shareTitle, _) = KSDownloaderBridge.extractShareTextMetadata(rawInput, cleanedUrl)
+            val (worksId, _) = KSDownloaderBridge.extractWorksAndAuthorIds(cleanedUrl)
 
-        val newItem = BulkPendingItem(
-            id = "bulk_${System.currentTimeMillis()}_$nextIndex",
-            title = resolvedTitle,
-            url = cleanedUrl,
-            fileSize = when (state.bulkContentType) {
-                BulkContentType.VIDEO -> "38.4 MB"
-                BulkContentType.AUDIO -> "6.8 MB"
-                BulkContentType.PHOTO -> "3.2 MB"
-            },
-            duration = when (state.bulkContentType) {
-                BulkContentType.VIDEO -> "06:24"
-                BulkContentType.AUDIO -> "03:45"
-                BulkContentType.PHOTO -> "IMG"
-            },
-            quality = state.bulkSelectedQuality,
-            contentType = state.bulkContentType,
-            thumbnailRes = thumbRes,
-            isSelected = true,
-            status = BulkItemStatus.PENDING
-        )
+            val resolvedTitle = if (newUrls.size == 1 && !shareTitle.isNullOrBlank()) {
+                shareTitle
+            } else if (worksId.isNotBlank()) {
+                "KS Works ($worksId)"
+            } else {
+                "${state.bulkContentType.label} Stream #$nextIndex"
+            }
+
+            BulkPendingItem(
+                id = "bulk_${System.currentTimeMillis()}_$nextIndex",
+                title = resolvedTitle,
+                url = cleanedUrl,
+                fileSize = when (state.bulkContentType) {
+                    BulkContentType.VIDEO -> "38.4 MB"
+                    BulkContentType.AUDIO -> "5.4 MB"
+                    BulkContentType.PHOTO -> "3.1 MB"
+                },
+                duration = when (state.bulkContentType) {
+                    BulkContentType.VIDEO -> "02:06"
+                    BulkContentType.AUDIO -> "02:06"
+                    BulkContentType.PHOTO -> "ATLAS"
+                },
+                quality = state.bulkSelectedQuality,
+                contentType = state.bulkContentType,
+                thumbnailRes = thumbRes,
+                isSelected = true,
+                status = BulkItemStatus.PENDING
+            )
+        }
 
         _uiState.update {
             it.copy(
                 bulkUrlInput = "",
-                bulkPendingItems = it.bulkPendingItems + newItem,
+                bulkPendingItems = it.bulkPendingItems + addedItems,
                 bulkValidationMessage = null,
                 isBulkValidationError = false
             )
@@ -345,7 +355,7 @@ class KuaiViewModel : ViewModel() {
             _uiState.update {
                 it.copy(
                     isBulkDownloadingAll = true,
-                    bulkValidationMessage = "Processing ${selectedIds.size} selected item(s) sequentially...",
+                    bulkValidationMessage = "KS-Downloader processing ${selectedIds.size} selected item(s)...",
                     isBulkValidationError = false
                 )
             }
@@ -359,14 +369,14 @@ class KuaiViewModel : ViewModel() {
                     state.copy(
                         bulkPendingItems = state.bulkPendingItems.map { item ->
                             if (item.id == targetId) {
-                                item.copy(status = BulkItemStatus.DOWNLOADING, progressPercent = 45)
+                                item.copy(status = BulkItemStatus.DOWNLOADING, progressPercent = 50)
                             } else {
                                 item
                             }
                         }
                     )
                 }
-                delay(180)
+                delay(160)
 
                 val currentItem = _uiState.value.bulkPendingItems.firstOrNull { it.id == targetId }
                 if (currentItem != null) {
@@ -381,9 +391,10 @@ class KuaiViewModel : ViewModel() {
                         BulkContentType.AUDIO -> "mp3"
                         BulkContentType.PHOTO -> "jpg"
                     }
-                    val cleanName = "KuaiSave_Bulk_${currentItem.id.takeLast(6)}_${currentItem.quality}.$ext"
+                    val (worksId, _) = KSDownloaderBridge.extractWorksAndAuthorIds(currentItem.url)
+                    val cleanName = "KS_${worksId}_${currentItem.quality}.$ext"
                     val queuedItem = VideoMediaItem(
-                        id = "bulk_dl_${currentItem.id}",
+                        id = "ks_bulk_dl_${currentItem.id}",
                         title = currentItem.title,
                         duration = currentItem.duration,
                         thumbnailRes = currentItem.thumbnailRes,
@@ -420,7 +431,7 @@ class KuaiViewModel : ViewModel() {
             _uiState.update {
                 it.copy(
                     isBulkDownloadingAll = false,
-                    bulkValidationMessage = "Processed $completedCount item(s) and queued in Player.",
+                    bulkValidationMessage = "KS-Downloader saved $completedCount item(s) to Offline Library (Player).",
                     isBulkValidationError = false
                 )
             }
@@ -439,7 +450,7 @@ class KuaiViewModel : ViewModel() {
             return
         }
 
-        val cleanedUrl = KuaishouEngineService.cleanShareText(rawInput)
+        val cleanedUrl = KSDownloaderBridge.cleanShareText(rawInput)
         val isValidHttpUrl = cleanedUrl != null &&
             (cleanedUrl.startsWith("http://", ignoreCase = true) ||
                 cleanedUrl.startsWith("https://", ignoreCase = true)) &&
@@ -456,46 +467,72 @@ class KuaiViewModel : ViewModel() {
         }
 
         viewModelScope.launch {
-            parseInputWithEngine(rawInput, autoStartDefaultDownload = true)
+            extractWithKSDownloader(rawInput, autoStartDefaultDownload = true)
         }
     }
 
-    private suspend fun parseInputWithEngine(
+    private suspend fun extractWithKSDownloader(
         rawInput: String,
         autoStartDefaultDownload: Boolean
     ) {
         _uiState.update {
             it.copy(
                 isDownloading = true,
-                validationMessage = "Parsing Kuaishou/Kwai stream (zero-login session)...",
+                validationMessage = "KS-Downloader extracting works metadata (non-login session)...",
                 isValidationError = false
             )
         }
 
-        val parseResult = KuaishouEngineService.parseUrl(rawInput, simulateNetworkDelayMs = 150L)
-        parseResult.fold(
-            onSuccess = { parsedPost ->
-                val defaultQuality = parsedPost.availableQualities.firstOrNull {
+        val extractResult = KSDownloaderBridge.extractWorks(rawInput, simulateNetworkDelayMs = 130L)
+        extractResult.fold(
+            onSuccess = { worksDetail ->
+                val defaultQuality = worksDetail.videoQualities.firstOrNull {
                     it.shortBadge.equals("1080p", ignoreCase = true)
-                } ?: parsedPost.availableQualities.firstOrNull()
+                } ?: worksDetail.videoQualities.firstOrNull()
+
+                // If user pasted space-separated batch links, queue the extra links into Bulk Download list automatically
+                if (worksDetail.batchSiblingUrls.isNotEmpty()) {
+                    val existingUrls = _uiState.value.bulkPendingItems.map { it.url.lowercase() }.toSet()
+                    val extraItems = worksDetail.batchSiblingUrls
+                        .filterNot { existingUrls.contains(it.lowercase()) }
+                        .mapIndexed { idx, siblingUrl ->
+                            val (sibWorksId, _) = KSDownloaderBridge.extractWorksAndAuthorIds(siblingUrl)
+                            BulkPendingItem(
+                                id = "ks_batch_${System.currentTimeMillis()}_$idx",
+                                title = "KS Batch Works ($sibWorksId)",
+                                url = siblingUrl,
+                                fileSize = "34.6 MB",
+                                duration = "01:45",
+                                quality = "1080p",
+                                contentType = BulkContentType.VIDEO,
+                                thumbnailRes = R.drawable.vid_thumb_2,
+                                isSelected = true
+                            )
+                        }
+                    if (extraItems.isNotEmpty()) {
+                        _uiState.update { state ->
+                            state.copy(bulkPendingItems = state.bulkPendingItems + extraItems)
+                        }
+                    }
+                }
 
                 _uiState.update { state ->
                     state.copy(
                         isDownloading = false,
-                        urlInput = if (autoStartDefaultDownload) "" else parsedPost.cleanShareUrl,
-                        parsedPost = parsedPost,
+                        urlInput = if (autoStartDefaultDownload) "" else worksDetail.worksUrl,
+                        parsedPost = worksDetail,
                         selectedParsedQuality = defaultQuality,
-                        validationMessage = if (parsedPost.postType == KuaishouPostType.PHOTO_CAROUSEL) {
-                            "Parsed Photo Carousel (${parsedPost.photoCarousel.size} HD photos) • Select action below."
+                        validationMessage = if (worksDetail.worksType == KSWorksType.PHOTO_ATLAS) {
+                            "KS-Downloader • 作品ID:${worksDetail.worksId} (${worksDetail.photoAtlas.size} HD Photos)"
                         } else {
-                            "Parsed Watermark-Free Stream (@${parsedPost.authorName}) • Select quality or action."
+                            "KS-Downloader • 作品ID:${worksDetail.worksId} (@${worksDetail.authorNickname}) • Select quality or action."
                         },
                         isValidationError = false
                     )
                 }
 
                 if (autoStartDefaultDownload) {
-                    if (parsedPost.postType == KuaishouPostType.PHOTO_CAROUSEL) {
+                    if (worksDetail.worksType == KSWorksType.PHOTO_ATLAS) {
                         downloadAllParsedPhotos()
                     } else {
                         downloadParsedVideoNoWatermark()
@@ -506,7 +543,7 @@ class KuaiViewModel : ViewModel() {
                 _uiState.update {
                     it.copy(
                         isDownloading = false,
-                        validationMessage = err.message ?: "Unable to parse media URL.",
+                        validationMessage = err.message ?: "Unable to extract Kuaishou works.",
                         isValidationError = true
                     )
                 }
@@ -514,7 +551,7 @@ class KuaiViewModel : ViewModel() {
         )
     }
 
-    fun selectParsedVideoQuality(quality: KuaishouVideoQualityStream) {
+    fun selectParsedVideoQuality(quality: KSVideoQualityOption) {
         _uiState.update {
             it.copy(
                 selectedParsedQuality = quality,
@@ -527,20 +564,21 @@ class KuaiViewModel : ViewModel() {
     fun downloadParsedVideoNoWatermark() {
         val post = _uiState.value.parsedPost ?: return
         val quality = _uiState.value.selectedParsedQuality
-            ?: post.availableQualities.firstOrNull()
+            ?: post.videoQualities.firstOrNull()
             ?: return
 
-        val fileName = post.buildCleanFileName(extension = "mp4", qualityTag = quality.shortBadge)
+        val fileName = post.buildKSFileName(extension = "mp4", qualityTag = quality.shortBadge)
         viewModelScope.launch {
-            executeStreamingDownload(
+            executeKSDownloadStream(
+                worksId = post.worksId,
                 fileName = fileName,
-                targetLabel = "${post.title} [${quality.shortBadge}]",
+                targetLabel = "${post.description} [${quality.shortBadge}]",
                 sourceUrl = quality.videoUrl,
                 totalBytes = quality.fileSizeBytes,
                 durationText = post.durationText,
                 formattedSize = quality.formattedSize,
                 qualityLabel = quality.qualityLabel,
-                authorName = post.authorName,
+                authorName = post.authorNickname,
                 thumbnailRes = post.thumbnailRes,
                 mediaCategory = MediaCategory.VIDEOS
             )
@@ -549,18 +587,19 @@ class KuaiViewModel : ViewModel() {
 
     fun downloadParsedOriginalAudio() {
         val post = _uiState.value.parsedPost ?: return
-        val audio = post.audioStream
-        val fileName = post.buildCleanFileName(extension = "mp3", qualityTag = "${audio.bitrateKbps}k")
+        val audio = post.musicStream
+        val fileName = post.buildKSFileName(extension = audio.extension, qualityTag = "Music_${audio.bitrateKbps}k")
         viewModelScope.launch {
-            executeStreamingDownload(
+            executeKSDownloadStream(
+                worksId = post.worksId,
                 fileName = fileName,
-                targetLabel = "${post.title} (Original MP3)",
-                sourceUrl = audio.audioUrl,
+                targetLabel = "${post.description} (Original MP3)",
+                sourceUrl = audio.musicUrl,
                 totalBytes = audio.fileSizeBytes,
                 durationText = audio.durationText,
                 formattedSize = audio.formattedSize,
                 qualityLabel = "Original MP3 (${audio.bitrateKbps}kbps)",
-                authorName = post.authorName,
+                authorName = post.authorNickname,
                 thumbnailRes = post.thumbnailRes,
                 mediaCategory = MediaCategory.AUDIO
             )
@@ -569,36 +608,38 @@ class KuaiViewModel : ViewModel() {
 
     fun downloadParsedCoverThumbnail() {
         val post = _uiState.value.parsedPost ?: return
-        val fileName = post.buildCleanFileName(extension = "jpg", qualityTag = "CoverHD")
+        val fileName = post.buildKSFileName(extension = "jpg", qualityTag = "CoverHD")
         viewModelScope.launch {
-            executeStreamingDownload(
+            executeKSDownloadStream(
+                worksId = post.worksId,
                 fileName = fileName,
-                targetLabel = "${post.title} (HD Cover)",
+                targetLabel = "${post.description} (HD Cover)",
                 sourceUrl = post.coverUrl,
                 totalBytes = post.coverFileSizeBytes,
-                durationText = "HD JPG",
+                durationText = "HD Cover",
                 formattedSize = post.coverFormattedSize,
                 qualityLabel = "HD Cover Thumbnail",
-                authorName = post.authorName,
+                authorName = post.authorNickname,
                 thumbnailRes = post.thumbnailRes,
                 mediaCategory = MediaCategory.IMAGES
             )
         }
     }
 
-    fun downloadSingleParsedPhoto(photo: KuaishouPhotoItem) {
+    fun downloadSingleParsedPhoto(photo: KSAtlasPhotoItem) {
         val post = _uiState.value.parsedPost ?: return
-        val fileName = post.buildCleanFileName(extension = "jpg", qualityTag = "Photo${photo.index}HD")
+        val fileName = post.buildKSFileName(extension = "jpg", qualityTag = "Atlas_${photo.index}")
         viewModelScope.launch {
-            executeStreamingDownload(
+            executeKSDownloadStream(
+                worksId = post.worksId,
                 fileName = fileName,
-                targetLabel = "${post.title} - Photo #${photo.index}",
+                targetLabel = "${post.description} - Photo #${photo.index}",
                 sourceUrl = photo.imageUrl,
                 totalBytes = photo.fileSizeBytes,
                 durationText = "HD",
                 formattedSize = photo.formattedSize,
-                qualityLabel = "HD Photo (${photo.resolution})",
-                authorName = post.authorName,
+                qualityLabel = "HD Atlas Photo (${photo.resolution})",
+                authorName = post.authorNickname,
                 thumbnailRes = photo.thumbnailRes,
                 mediaCategory = MediaCategory.IMAGES
             )
@@ -607,34 +648,36 @@ class KuaiViewModel : ViewModel() {
 
     fun downloadAllParsedPhotos() {
         val post = _uiState.value.parsedPost ?: return
-        if (post.photoCarousel.isEmpty()) return
+        if (post.photoAtlas.isEmpty()) return
 
         viewModelScope.launch {
-            for (photo in post.photoCarousel) {
-                val fileName = post.buildCleanFileName(extension = "jpg", qualityTag = "Photo${photo.index}HD")
-                executeStreamingDownload(
+            for (photo in post.photoAtlas) {
+                val fileName = post.buildKSFileName(extension = "jpg", qualityTag = "Atlas_${photo.index}")
+                executeKSDownloadStream(
+                    worksId = post.worksId,
                     fileName = fileName,
-                    targetLabel = "${post.title} - Photo #${photo.index}",
+                    targetLabel = "${post.description} - Photo #${photo.index}",
                     sourceUrl = photo.imageUrl,
                     totalBytes = photo.fileSizeBytes,
                     durationText = "HD",
                     formattedSize = photo.formattedSize,
-                    qualityLabel = "HD Photo (${photo.resolution})",
-                    authorName = post.authorName,
+                    qualityLabel = "HD Atlas Photo (${photo.resolution})",
+                    authorName = post.authorNickname,
                     thumbnailRes = photo.thumbnailRes,
                     mediaCategory = MediaCategory.IMAGES
                 )
             }
             _uiState.update {
                 it.copy(
-                    validationMessage = "Downloaded all ${post.photoCarousel.size} HD photos into Offline Library.",
+                    validationMessage = "KS-Downloader saved all ${post.photoAtlas.size} HD photos into Offline Library.",
                     isValidationError = false
                 )
             }
         }
     }
 
-    private suspend fun executeStreamingDownload(
+    private suspend fun executeKSDownloadStream(
+        worksId: String,
         fileName: String,
         targetLabel: String,
         sourceUrl: String,
@@ -646,13 +689,14 @@ class KuaiViewModel : ViewModel() {
         thumbnailRes: Int,
         mediaCategory: MediaCategory
     ) {
-        val result = KuaishouEngineService.streamDownloadToDevice(
+        val result = KSDownloaderBridge.streamDownloadToDevice(
+            worksId = worksId,
             fileName = fileName,
             targetLabel = targetLabel,
             sourceUrl = sourceUrl,
             totalBytes = totalBytes,
             mediaCategory = mediaCategory,
-            stepDelayMs = 25L,
+            stepDelayMs = 24L,
             onProgress = { progressState ->
                 _uiState.update { it.copy(activeDownloadTask = progressState) }
             }
@@ -694,15 +738,15 @@ class KuaiViewModel : ViewModel() {
 
     fun togglePauseResumeDownload() {
         val current = _uiState.value.activeDownloadTask ?: return
-        if (current.status == DownloadTaskStatus.PAUSED) {
-            KuaishouEngineService.resumeActiveDownload()
-        } else if (current.status == DownloadTaskStatus.DOWNLOADING) {
-            KuaishouEngineService.pauseActiveDownload()
+        if (current.status == KSDownloadStatus.PAUSED) {
+            KSDownloaderBridge.resumeActiveDownload()
+        } else if (current.status == KSDownloadStatus.DOWNLOADING) {
+            KSDownloaderBridge.pauseActiveDownload()
         }
     }
 
     fun cancelActiveDownload() {
-        KuaishouEngineService.cancelActiveDownload()
+        KSDownloaderBridge.cancelActiveDownload()
         _uiState.update {
             it.copy(
                 validationMessage = "Download cancelled.",

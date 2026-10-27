@@ -8,8 +8,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
-import com.example.engine.KuaishouEngineService
-import com.example.engine.KuaishouPostType
+import com.example.ksdownloader.KSDownloaderBridge
+import com.example.ksdownloader.KSLinkFormat
+import com.example.ksdownloader.KSWorksType
 import com.example.ui.screens.KuaiVideoSaveApp
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.runBlocking
@@ -37,58 +38,85 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `verify KuaishouEngineService share text cleaner session cookies and multi-layer parser`() = runBlocking {
-        val messyShare = "🔥太震撼了！航拍绝美雪山湖泊 #快手创作者 @自然探索者 https://v.kuaishou.com/7xYz9A 复制此消息打开【快手】直接观看！"
-        val cleanedUrl = KuaishouEngineService.cleanShareText(messyShare)
-        assertEquals("https://v.kuaishou.com/7xYz9A", cleanedUrl)
+    fun `verify KSDownloaderBridge 5 official link formats batch extraction and FastAPI 5557 contract`() = runBlocking {
+        // 1. Verify all 5 official JoeanAmier/KS-Downloader link formats
+        val link1 = "https://www.kuaishou.com/f/X-92aBcDeF"
+        val link2 = "https://v.kuaishou.com/7xYz9A"
+        val link3 = "https://www.kuaishou.com/short-video/3x89aBcDeF"
+        val link4 = "https://kuaishou.cn/short-video/3x99CnPost"
+        val link5 = "https://live.kuaishou.com/u/author_881/3xLivePost99"
 
-        val (titleHint, authorHint) = KuaishouEngineService.extractShareTextMetadata(messyShare, cleanedUrl!!)
-        assertNotNull(titleHint)
-        assertEquals("自然探索者", authorHint)
+        assertEquals(KSLinkFormat.SHARE_F, KSDownloaderBridge.classifyLinkFormat(link1))
+        assertEquals(KSLinkFormat.SHORT_V, KSDownloaderBridge.classifyLinkFormat(link2))
+        assertEquals(KSLinkFormat.WEB_SHORT_VIDEO, KSDownloaderBridge.classifyLinkFormat(link3))
+        assertEquals(KSLinkFormat.CN_SHORT_VIDEO, KSDownloaderBridge.classifyLinkFormat(link4))
+        assertEquals(KSLinkFormat.LIVE_USER_POST, KSDownloaderBridge.classifyLinkFormat(link5))
 
-        val cookies = KuaishouEngineService.ensureVisitorSessionCookies()
+        // 2. Verify space-separated batch link extraction
+        val batchInput = "$link1 $link2 $link3 $link4 $link5"
+        val extractedBatch = KSDownloaderBridge.extractBatchUrls(batchInput)
+        assertEquals(5, extractedBatch.size)
+
+        // 3. Verify non-login visitor session cookies
+        val cookies = KSDownloaderBridge.ensureNonLoginSessionCookies()
         assertTrue(cookies["did"]?.startsWith("web_") == true)
         assertTrue(cookies.containsKey("didv"))
 
-        val videoParsed = KuaishouEngineService.parseUrl(
+        // 4. Verify video extraction & 4 media streams
+        val messyShare = "🔥太震撼了！航拍绝美雪山湖泊 #快手创作者 @自然探索者 https://v.kuaishou.com/7xYz9A 复制此消息打开【快手】直接观看！"
+        val videoWorks = KSDownloaderBridge.extractWorks(
             rawInput = messyShare,
             simulateNetworkDelayMs = 0L
         ).getOrThrow()
-        assertEquals(KuaishouPostType.VIDEO, videoParsed.postType)
-        assertEquals("https://v.kuaishou.com/7xYz9A", videoParsed.cleanShareUrl)
-        assertTrue(videoParsed.availableQualities.size >= 4)
-        assertTrue(videoParsed.audioStream.audioUrl.endsWith(".mp3"))
-        assertTrue(videoParsed.coverUrl.endsWith(".jpg"))
 
-        val cleanMp4Name = videoParsed.buildCleanFileName("mp4", "1080p")
-        assertTrue(cleanMp4Name.startsWith("KuaiSave_"))
-        assertTrue(cleanMp4Name.endsWith("_1080p.mp4"))
+        assertEquals(KSWorksType.VIDEO, videoWorks.worksType)
+        assertEquals("https://v.kuaishou.com/7xYz9A", videoWorks.worksUrl)
+        assertEquals("自然探索者", videoWorks.authorNickname)
+        assertTrue(videoWorks.videoQualities.size >= 4)
+        assertTrue(videoWorks.musicUrl.endsWith(".mp3"))
+        assertTrue(videoWorks.coverUrl.endsWith(".jpg"))
 
+        val ksMap = videoWorks.toKSRepositoryMap()
+        assertEquals(videoWorks.worksId, ksMap["作品ID"])
+        assertEquals("视频", ksMap["作品类型"])
+
+        // 5. Verify Photo Atlas (图集) extraction
         val photoShare = "📸绝美秋日图集分享 @风光摄影师 https://www.kuaishou.com/photo/atlas_99281"
-        val photoParsed = KuaishouEngineService.parseUrl(
+        val photoWorks = KSDownloaderBridge.extractWorks(
             rawInput = photoShare,
             simulateNetworkDelayMs = 0L
         ).getOrThrow()
-        assertEquals(KuaishouPostType.PHOTO_CAROUSEL, photoParsed.postType)
-        assertTrue(photoParsed.photoCarousel.isNotEmpty())
+        assertEquals(KSWorksType.PHOTO_ATLAS, photoWorks.worksType)
+        assertTrue(photoWorks.photoAtlas.isNotEmpty())
 
-        val mockHtml = """
-            <html><head><script>
-            window.__INITIAL_STATE__ = {"visionVideoDetail":{"photo":{"id":"3x89aBc","caption":"Mountain Sunrise 4K","photoUrl":"https://tx2.a.kwimgs.com/upic/video_nowm.mp4","coverUrls":[{"url":"https://tx2.a.kwimgs.com/upic/cover.jpg"}],"soundTrack":{"audioUrls":[{"url":"https://tx2.a.kwimgs.com/upic/audio.mp3"}]}},"author":{"name":"AlpineStudio"}}};
-            </script></head></html>
+        // 6. Verify FastAPI Port 5557 Chinese JSON response parsing
+        val fastApiJson = """
+            {
+              "message": "success",
+              "data": {
+                "作品ID": "3xFastApi992",
+                "作品描述": "FastAPI 5557 Extracted Mountain Sunrise",
+                "作品类型": "视频",
+                "作者昵称": "JoeanStudio",
+                "作者ID": "ks_joean_01",
+                "下载地址": ["https://txmov2.a.kwimgs.com/upic/video_nowm.mp4"],
+                "封面地址": "https://txmov2.a.kwimgs.com/upic/cover_hd.jpg",
+                "音乐地址": "https://txmov2.a.kwimgs.com/upic/music_orig.mp3"
+              }
+            }
         """.trimIndent()
-        val stateParsed = KuaishouEngineService.tryParseHtmlOrJsonPayload(
-            payload = mockHtml,
-            cleanShareUrl = "https://v.kuaishou.com/3x89aBc",
-            resolvedPageUrl = "https://www.kuaishou.com/short-video/3x89aBc",
-            rawInput = "https://v.kuaishou.com/3x89aBc",
+        val parsedFastApi = KSDownloaderBridge.tryParseKSExtractorPayload(
+            payload = fastApiJson,
+            cleanShareUrl = link3,
+            resolvedPageUrl = link3,
+            rawInput = link3,
             titleHint = null,
-            authorHint = null,
-            sourceTag = "UnitTest"
+            authorHint = null
         )
-        assertNotNull(stateParsed)
-        assertEquals("Mountain Sunrise 4K", stateParsed?.title)
-        assertEquals("AlpineStudio", stateParsed?.authorName)
+        assertNotNull(parsedFastApi)
+        assertEquals("3xFastApi992", parsedFastApi?.worksId)
+        assertEquals("FastAPI 5557 Extracted Mountain Sunrise", parsedFastApi?.description)
+        assertEquals("JoeanStudio", parsedFastApi?.authorNickname)
     }
 
     @Test

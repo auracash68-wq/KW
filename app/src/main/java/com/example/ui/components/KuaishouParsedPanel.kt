@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
@@ -31,12 +30,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.engine.DownloadTaskState
-import com.example.engine.DownloadTaskStatus
-import com.example.engine.KuaishouParsedPost
-import com.example.engine.KuaishouPhotoItem
-import com.example.engine.KuaishouPostType
-import com.example.engine.KuaishouVideoQualityStream
+import com.example.ksdownloader.KSAtlasPhotoItem
+import com.example.ksdownloader.KSDownloadStatus
+import com.example.ksdownloader.KSDownloadTaskState
+import com.example.ksdownloader.KSDownloaderWorksDetail
+import com.example.ksdownloader.KSVideoQualityOption
+import com.example.ksdownloader.KSWorksType
 import com.example.ui.theme.BrandActionGradient
 import com.example.ui.theme.BrandBlue
 import com.example.ui.theme.BrandGreen
@@ -51,15 +50,15 @@ import com.example.ui.theme.WhiteText
 
 @Composable
 fun KuaishouParsedPanel(
-    parsedPost: KuaishouParsedPost?,
-    selectedQuality: KuaishouVideoQualityStream?,
-    activeDownloadTask: DownloadTaskState?,
-    onSelectQuality: (KuaishouVideoQualityStream) -> Unit,
+    parsedPost: KSDownloaderWorksDetail?,
+    selectedQuality: KSVideoQualityOption?,
+    activeDownloadTask: KSDownloadTaskState?,
+    onSelectQuality: (KSVideoQualityOption) -> Unit,
     onDownloadVideoNoWatermark: () -> Unit,
     onDownloadOriginalAudio: () -> Unit,
     onDownloadCoverThumbnail: () -> Unit,
     onDownloadAllPhotos: () -> Unit,
-    onDownloadSinglePhoto: (KuaishouPhotoItem) -> Unit,
+    onDownloadSinglePhoto: (KSAtlasPhotoItem) -> Unit,
     onPauseOrResumeDownload: () -> Unit,
     onCancelDownload: () -> Unit,
     modifier: Modifier = Modifier
@@ -68,7 +67,7 @@ fun KuaishouParsedPanel(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        if (activeDownloadTask != null && activeDownloadTask.status != DownloadTaskStatus.IDLE) {
+        if (activeDownloadTask != null && activeDownloadTask.status != KSDownloadStatus.IDLE) {
             RealTimeDownloadProgressCard(
                 task = activeDownloadTask,
                 onPauseOrResume = onPauseOrResumeDownload,
@@ -101,10 +100,10 @@ fun KuaishouParsedPanel(
                                 .testTag("parsed_post_badge")
                         ) {
                             Text(
-                                text = if (parsedPost.postType == KuaishouPostType.PHOTO_CAROUSEL) {
-                                    "PHOTO CAROUSEL • NO WATERMARK"
+                                text = if (parsedPost.worksType == KSWorksType.PHOTO_ATLAS) {
+                                    "KS-DOWNLOADER • 作品类型:${parsedPost.worksType.ksLabel} (PHOTO ATLAS)"
                                 } else {
-                                    "VIDEO STREAM • NO WATERMARK"
+                                    "KS-DOWNLOADER • 作品类型:${parsedPost.worksType.ksLabel} (NO WATERMARK)"
                                 },
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
@@ -114,7 +113,7 @@ fun KuaishouParsedPanel(
                     }
 
                     Text(
-                        text = "@${parsedPost.authorName}",
+                        text = "@${parsedPost.authorNickname}",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = BrandBlue,
@@ -139,7 +138,7 @@ fun KuaishouParsedPanel(
                     ) {
                         Image(
                             painter = painterResource(id = parsedPost.thumbnailRes),
-                            contentDescription = parsedPost.title,
+                            contentDescription = parsedPost.description,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -164,7 +163,7 @@ fun KuaishouParsedPanel(
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = parsedPost.title,
+                            text = parsedPost.description,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = PrimaryText,
@@ -174,18 +173,18 @@ fun KuaishouParsedPanel(
                         )
                         Spacer(modifier = Modifier.height(3.dp))
                         Text(
-                            text = parsedPost.cleanShareUrl,
+                            text = "作品ID: ${parsedPost.worksId} • ${parsedPost.worksUrl}",
                             fontSize = 11.sp,
                             color = SecondaryText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.height(3.dp))
-                        val activeSizeText = if (parsedPost.postType == KuaishouPostType.PHOTO_CAROUSEL) {
-                            "${parsedPost.photoCarousel.size} HD Photos • Audio ${parsedPost.audioStream.formattedSize}"
+                        val activeSizeText = if (parsedPost.worksType == KSWorksType.PHOTO_ATLAS) {
+                            "${parsedPost.photoAtlas.size} HD Photos • Music ${parsedPost.musicStream.formattedSize}"
                         } else {
-                            val q = selectedQuality ?: parsedPost.availableQualities.firstOrNull()
-                            "${q?.qualityLabel ?: "1080p Full HD"} • ${q?.formattedSize ?: "34.7 MB"}"
+                            val q = selectedQuality ?: parsedPost.videoQualities.firstOrNull()
+                            "${q?.qualityLabel ?: "1080p Full HD"} • ${q?.formattedSize ?: "34.6 MB"}"
                         }
                         Text(
                             text = activeSizeText,
@@ -199,7 +198,7 @@ fun KuaishouParsedPanel(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                if (parsedPost.postType == KuaishouPostType.VIDEO) {
+                if (parsedPost.worksType == KSWorksType.VIDEO) {
                     Text(
                         text = "Select Stream Quality (No Watermark)",
                         fontSize = 12.sp,
@@ -214,7 +213,7 @@ fun KuaishouParsedPanel(
                             .testTag("parsed_quality_selector"),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        parsedPost.availableQualities.forEach { stream ->
+                        parsedPost.videoQualities.forEach { stream ->
                             val isSelected = selectedQuality?.qualityId == stream.qualityId
                             val pillShape = RoundedCornerShape(9.dp)
                             Column(
@@ -268,7 +267,7 @@ fun KuaishouParsedPanel(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     ContextActionSolidButton(
-                        text = "Download Audio (Original MP3 • ${parsedPost.audioStream.formattedSize})",
+                        text = "Download Audio (Original MP3 • ${parsedPost.musicStream.formattedSize})",
                         backgroundColor = BrandGreen,
                         textColor = WhiteText,
                         onClick = onDownloadOriginalAudio,
@@ -278,7 +277,7 @@ fun KuaishouParsedPanel(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     ContextActionOutlinedButton(
-                        text = "Download Video Thumbnail (HD Cover • ${parsedPost.coverFormattedSize})",
+                        text = "Download Video Thumbnail (HD Cover)",
                         borderColor = BrandBlue,
                         textColor = BrandBlue,
                         onClick = onDownloadCoverThumbnail,
@@ -286,7 +285,7 @@ fun KuaishouParsedPanel(
                     )
                 } else {
                     Text(
-                        text = "Photo Carousel Album (${parsedPost.photoCarousel.size} HD Images)",
+                        text = "Photo Carousel Album (${parsedPost.photoAtlas.size} HD Images)",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = PrimaryText
@@ -299,7 +298,7 @@ fun KuaishouParsedPanel(
                             .testTag("parsed_photo_carousel"),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        parsedPost.photoCarousel.take(4).forEach { photo ->
+                        parsedPost.photoAtlas.take(4).forEach { photo ->
                             Column(
                                 modifier = Modifier
                                     .weight(1f)
@@ -334,7 +333,7 @@ fun KuaishouParsedPanel(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     ContextActionButton(
-                        text = "Download All Post Photos (HD • ${parsedPost.photoCarousel.size} Images)",
+                        text = "Download All Post Photos (HD • ${parsedPost.photoAtlas.size} Images)",
                         backgroundBrush = BrandActionGradient,
                         textColor = WhiteText,
                         onClick = onDownloadAllPhotos,
@@ -344,7 +343,7 @@ fun KuaishouParsedPanel(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     ContextActionSolidButton(
-                        text = "Download Audio (Original MP3 • ${parsedPost.audioStream.formattedSize})",
+                        text = "Download Audio (Original MP3 • ${parsedPost.musicStream.formattedSize})",
                         backgroundColor = BrandGreen,
                         textColor = WhiteText,
                         onClick = onDownloadOriginalAudio,
@@ -358,7 +357,7 @@ fun KuaishouParsedPanel(
 
 @Composable
 private fun RealTimeDownloadProgressCard(
-    task: DownloadTaskState,
+    task: KSDownloadTaskState,
     onPauseOrResume: () -> Unit,
     onCancel: () -> Unit
 ) {
@@ -418,18 +417,18 @@ private fun RealTimeDownloadProgressCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             val statusText = when (task.status) {
-                DownloadTaskStatus.DOWNLOADING -> "Streaming • ${task.formattedSpeed}"
-                DownloadTaskStatus.PAUSED -> "Paused • Tap Resume"
-                DownloadTaskStatus.COMPLETED -> "Saved to Offline Library • ${task.formattedSpeed}"
-                DownloadTaskStatus.CANCELLED -> "Cancelled"
-                DownloadTaskStatus.FAILED -> "Failed"
-                DownloadTaskStatus.IDLE -> ""
+                KSDownloadStatus.DOWNLOADING -> "KS-Downloader • ${task.formattedSpeed}"
+                KSDownloadStatus.PAUSED -> "Paused • Tap Resume"
+                KSDownloadStatus.COMPLETED -> "Saved to Offline Library • ${task.formattedSpeed}"
+                KSDownloadStatus.CANCELLED -> "Cancelled"
+                KSDownloadStatus.FAILED -> "Failed"
+                KSDownloadStatus.IDLE -> ""
             }
             Text(
                 text = statusText,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
-                color = if (task.status == DownloadTaskStatus.CANCELLED || task.status == DownloadTaskStatus.FAILED) {
+                color = if (task.status == KSDownloadStatus.CANCELLED || task.status == KSDownloadStatus.FAILED) {
                     ErrorText
                 } else {
                     SecondaryText
@@ -437,7 +436,7 @@ private fun RealTimeDownloadProgressCard(
                 modifier = Modifier.testTag("download_task_speed")
             )
 
-            if (task.status == DownloadTaskStatus.DOWNLOADING || task.status == DownloadTaskStatus.PAUSED) {
+            if (task.status == KSDownloadStatus.DOWNLOADING || task.status == KSDownloadStatus.PAUSED) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box(
                         modifier = Modifier
@@ -448,7 +447,7 @@ private fun RealTimeDownloadProgressCard(
                             .testTag("btn_pause_resume_download")
                     ) {
                         Text(
-                            text = if (task.status == DownloadTaskStatus.PAUSED) "Resume" else "Pause",
+                            text = if (task.status == KSDownloadStatus.PAUSED) "Resume" else "Pause",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = BrandBlue
