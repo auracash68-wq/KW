@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Kuai video Save</string>
+    <string name="placeholder_paste_url">Paste video URL here...</string>
+</resources>
